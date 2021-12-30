@@ -1,12 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"geerpc"
-	"geerpc/codec"
 	"log"
 	"net"
+	"sync"
 )
 
 func main() {
@@ -21,25 +20,20 @@ func main() {
 		geerpc.Accept(listener)
 	}(addr)
 
-	conn, err := net.Dial("tcp", <-addr)
-	if err != nil {
-		log.Println("客户端连接失败")
-		return
-	}
-
-	json.NewEncoder(conn).Encode(geerpc.DefaultOption)
-	cc := codec.NewGobCodec(conn)
+	client, _ := geerpc.Dial("tcp", <-addr)
+	defer client.Close()
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
-		h := &codec.Header{
-			ServiceMethod: "Foo.BAr",
-			Seq:           uint64(i),
-			Error:         "",
-		}
-		body := "hello server"
-		cc.Write(h, body)
-		var reply string
-		cc.ReadHeader(h)
-		cc.ReadBody(&reply)
-		fmt.Println(reply)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := fmt.Sprintf("args: %d", i)
+			var reply string
+			if err := client.Call("Foo.Bar", args, &reply); err != nil {
+				log.Fatal("call Foo.Bar error: ", err)
+			}
+			log.Println("reply:", reply)
+		}(i)
 	}
+	wg.Wait()
 }

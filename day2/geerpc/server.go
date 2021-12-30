@@ -143,14 +143,14 @@ func (s *Server) serveCodec(cc codec.Codec) {
 func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	// 1. 编解码器解码 Header
 	/*
-		var a *codec.Header
-		var b codec.Header
-		c := new(codec.Header)
-		d := &codec.Header{}
-		fmt.Println(a, &b, c, d)
-	               <nil> &{ 0 } &{ 0 } &{ 0 }
-		第一种写法是 nil，所以不能用，推荐用 d 这种写法。 妈的，真坑。
-	 */
+			var a *codec.Header
+			var b codec.Header
+			c := new(codec.Header)
+			d := &codec.Header{}
+			fmt.Println(a, &b, c, d)
+		               <nil> &{ 0 } &{ 0 } &{ 0 }
+			第一种写法是 nil，所以不能用，推荐用 d 这种写法。 妈的，真坑。
+	*/
 	h := &codec.Header{}
 	if err := cc.ReadHeader(h); err != nil {
 		// 3. 思考到这里的错误类型得进行一下判断
@@ -178,7 +178,7 @@ func (s *Server) handleRequest(cc codec.Codec, req *request, wg *sync.WaitGroup,
 	// 处理的过程当然是根据参数去调用方法了
 	// 我们这里先简单处理，直接写回一个返回值即可
 	defer wg.Done()
-	log.Println(req.h, req.argv.Elem())
+	log.Print(req.h, "-", req.argv.Elem())
 	req.replyv = reflect.ValueOf(fmt.Sprintf("rpc resp %d", req.h.Seq))
 	s.sendResponse(cc, req.h, req.replyv.Interface(), sending)
 }
@@ -200,6 +200,6 @@ type request struct {
 // DefaultServer 服务端的处理逻辑完成之后，我们给一个全局默认的服务器，以及一个通过包名就可以启动服务的函数，简化用户使用
 var DefaultServer = NewServer()
 
-func Accept(listener net.Listener){
+func Accept(listener net.Listener) {
 	DefaultServer.Accept(listener)
 }
