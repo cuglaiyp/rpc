@@ -123,6 +123,7 @@ func (c *Client) removeCall(seq uint64) *Call {
 }
 
 func (c *Client) terminateCalls(err error) {
+	// TODO 思考为什么要同时持有两把锁
 	c.sending.Lock() // 先上 sending 锁，与发送操作形成互斥
 	defer c.sending.Unlock()
 	c.mu.Lock() // 上完 sending 锁之后，再上 mu 锁
