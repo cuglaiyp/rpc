@@ -120,12 +120,11 @@ func (s *Server) serveCodec(cc codec.Codec) {
 		req, err := s.readRequest(cc)
 		if err != nil {
 			if req == nil {
-				// req 也为空的话，是没办法恢复的，所以只能 break，关闭连接了
-				log.Println("rpc server: resolve request fail: ", err)
+				// req 也为空的话，是读取 Header 出了问题，也就说明这个连接出现了问题。这是没办法恢复的，所以只能 break，关闭连接了
+				// log.Println("rpc server: resolve request fail: ", err)
 				break
 			}
-			// 目前好像是不存在这种场景的
-			// req 不为空，但是出现了错误，那么往回写入错误信息
+			// req 不为空，Header 没有问题，但是出现了其他错误（service 查找失败、Body 读取失败），那么我么可以往回写入错误信息
 			req.h.Error = err.Error()
 			s.sendResponse(cc, req.h, invalidRequest, sending) // 写回
 			continue
@@ -145,24 +144,9 @@ func (s *Server) serveCodec(cc codec.Codec) {
 // 从连接中解析出一对正常的 Header 和 Body
 func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	// 1. 编解码器解码 Header
-	/*
-			var a *codec.Header
-			var b codec.Header
-			c := new(codec.Header)
-			d := &codec.Header{}
-			fmt.Println(a, &b, c, d)
-		               <nil> &{ 0 } &{ 0 } &{ 0 }
-			第一种写法是 nil，所以不能用，推荐用 d 这种写法。 妈的，真坑。
-	*/
-	h := &codec.Header{}
-	err := cc.ReadHeader(h)
+	h, err := readRequestHeader(cc)
 	if err != nil {
-		// 3. 思考到这里的错误类型得进行一下判断
-		// 因为当读到输入流的末尾时，也会出现 EOF 错误，但这是正常的
-		if err != io.EOF && err != io.ErrUnexpectedEOF {
-			log.Println("rpc server: read request error: ", err)
-			return nil, err
-		}
+		return nil, err
 	}
 	// 准备一个 request
 	req := &request{h: h}
@@ -183,10 +167,35 @@ func (s *Server) readRequest(cc codec.Codec) (*request, error) {
 	//req.argv = reflect.New(reflect.TypeOf(""))
 	if err := cc.ReadBody(argvi); err != nil {
 		// TODO 为什么读取 Body 的时候不需要校验 EOF 呢？
+		// 因为读取 Header 时已经进行了 EOF 校验，
+		//    - 如果读取 Header 出现了 EOF，那么不会再读 Body 了
+		//    - 如果读取 Header 没有出现 EOF，那么按照我们的格式，该 Header 必定会出现与之成对的 Body
 		log.Println("rpc server: read argv error: ", err)
 		return req, err
 	}
 	return req, nil
+}
+
+func readRequestHeader(cc codec.Codec) (*codec.Header, error) {
+	/*
+			var a *codec.Header
+			var b codec.Header
+			c := new(codec.Header)
+			d := &codec.Header{}
+			fmt.Println(a, &b, c, d)
+		               <nil> &{ 0 } &{ 0 } &{ 0 }
+			第一种写法是 nil，所以不能用，推荐用 d 这种写法。 妈的，真坑。
+	*/
+	h := &codec.Header{}
+	if err := cc.ReadHeader(h); err != nil {
+		// 3. 思考到这里的错误类型得进行一下判断
+		// 因为当读到输入流的末尾时，也会出现 EOF 错误。但这是正常的，所以不需要进行日志打印
+		if err != io.EOF && err != io.ErrUnexpectedEOF {
+			log.Println("rpc server: read request error: ", err)
+		}
+		return nil, err
+	}
+	return h, nil
 }
 
 // 读取了 Header 和 Body 后，就需要进行处理了
@@ -247,6 +256,7 @@ func (s *Server) findService(serviceMethod string) (svc *service, mtype *methodT
 	dot := strings.LastIndex(serviceMethod, ".")
 	if dot < 0 {
 		err = errors.New("rpc server: service.methods request ill-formed: " + serviceMethod)
+		return
 	}
 	serviceName, methodName := serviceMethod[:dot], serviceMethod[dot+1:]
 	svci, ok := s.serviceMap.Load(serviceName)

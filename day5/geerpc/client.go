@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -448,5 +451,49 @@ func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply int
 		return fmt.Errorf("rpc client: call failed: " + ctx.Err().Error())
 	case ca := <-call.Done: // 调用完成
 		return ca.Error
+	}
+}
+
+// ---
+// 在前面 4 天，完成了服务端、客户端、服务注册、超时处理等功能的编写。现在完成客户端支持 Http 协议的功能
+
+// 目前，服务端已经能够处理 Http 请求，并且将 Http 请求转换成我们的 rpc
+
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	// 给服务端写一句话。使用 CONNECT 方法的报文格式
+	// 写入 http 请求消息，格式为：请求行\n请求头（头部行）\n请求体。由于没有加请求头（头部行），所以这里末尾写了两个\n
+	 io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+	// 要求服务端以 CONNECT 方法返回
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err == nil && resp.Status == connected {
+		// Http 连接建立之后，再继续建立我们的 rpc 连接，返回我们的 rpc 客户端
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+	return nil, err
+}
+
+// DialHTTP 同样为了方便，给 NewHTTPClient 函数也包装一层
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+// 最后，由于有两个 Dial（Dial、DialHTTP），把这两个方法再包装一层。
+
+// XDial 去掉 network 参数，通过指定的 address 格式区分网络。例：http@127.0.0.1:8080)
+func XDial(address string, opts ...*Option) (*Client, error) {
+	parts := strings.Split(address, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client: wrong format '%s', expect protocol@addr", address)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		// http 协议底层本身还是基于 tcp 的，所以这里网络要填入 tcp。
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr,opts...)
 	}
 }

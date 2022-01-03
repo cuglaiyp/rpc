@@ -5,6 +5,7 @@ import (
 	"geerpc"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 )
 
@@ -24,11 +25,14 @@ func startServer(addr chan string) {
 		return
 	}
 	addr <- listener.Addr().String()
-	geerpc.Accept(listener) // 启动 rpc 服务
+	// geerpc.Accept(listener) // 启动 rpc 服务
+	// 启动 rpc 服务 -> 启动 http 服务 + rpc 服务
+	geerpc.HandleHttp()
+	http.Serve(listener, nil)
 }
 
 func startClient(addr chan string) {
-	client, _ := geerpc.Dial("tcp", <-addr)
+	client, _ := geerpc.XDial("http@" + <-addr)
 	defer client.Close()
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
