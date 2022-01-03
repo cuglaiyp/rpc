@@ -1,6 +1,7 @@
 package geerpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -68,9 +71,9 @@ import (
 //      提供了将一个结构体对象转变成 service对象，其中的合规方法转变成 methodType 的函数
 //    - 将 service 集成进 Server，使得 Server能够注册 service，持有多个 service，并且在处理请求时，能够调用到对应 service 的 method 上
 // 6. 在 client.go、server.go 中
-//    - 为 client.go 中 Dial 函数添加了连接的超时处理的逻辑，连接的超时包括 net.Dial 和 构造客户端 两部分
-//      为 Call 方法添加了调用超时的逻辑
-//    - 为 server.go 中的 handleRequest 方法添加了超时处理逻辑，主要是反射调用目标方法的超时时间
+//    - 为 client.go 中 Dial 函数添加了连接的超时处理的逻辑，连接的超时包括 net.Dial 和 构造客户端 两部分。（使用 time.After() 结合 select+chan 完成）
+//      为 Call 方法添加了调用超时的逻辑。（使用 context 来完成，context 的好处是：不仅可以完成超时的功能，还有 WithValue、WithCancel 等功能）
+//    - 为 server.go 中的 handleRequest 方法添加了超时处理逻辑，主要是反射调用目标方法的超时时。使用 time.After() 结合 select+chan 完成）
 //    - 添加了对超时逻辑的测试代码
 //
 
@@ -256,7 +259,7 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 	// 协商编码
 	if err := json.NewEncoder(conn).Encode(opt); err != nil {
 		log.Println("rpc client: option err: ", err)
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	cc := codecFunc(conn)
@@ -278,7 +281,7 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 
 // conn 怎么来？ net.Dial(network, address)！ opt 怎么来？自己构造！
 
-// Dial 优化这两个操作，我们再包装一层
+// Dial 为了优化上面这两个操作，我们再包装一层
 func Dial(network, address string, opts ...*Option) (client *Client, err error) {
 	/*if len(opts) > 1 {
 		return nil, errors.New("option 数量过多")
@@ -337,7 +340,7 @@ func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (cli
 	}
 	defer func() {
 		if err != nil {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
@@ -350,7 +353,6 @@ func dialTimeout(f newClientFunc, network, address string, opts ...*Option) (cli
 		// 为了更定制化一些，将能够生成 Client 的函数抽象成一个类型，由参数传进来
 		// cs.client, cs.err = NewClient(conn, opt)
 		cs.client, cs.err = f(conn, opt)
-
 		// ch <- cs
 		// 这里会有内存泄露的隐患：超时之后，由于没有 <-ch，这个子协程会阻塞在 ch <- cs
 		// 有两种解决方案：
@@ -449,5 +451,49 @@ func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply int
 		return fmt.Errorf("rpc client: call failed: " + ctx.Err().Error())
 	case ca := <-call.Done: // 调用完成
 		return ca.Error
+	}
+}
+
+// ---
+// 在前面 4 天，完成了服务端、客户端、服务注册、超时处理等功能的编写。现在完成客户端支持 Http 协议的功能
+
+// 目前，服务端已经能够处理 Http 请求，并且将 Http 请求转换成我们的 rpc
+
+func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
+	// 给服务端写一句话。使用 CONNECT 方法的报文格式
+	// 写入 http 请求消息，格式为：请求行\n请求头（头部行）\n请求体。由于没有加请求头（头部行），所以这里末尾写了两个\n
+	 io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+	// 要求服务端以 CONNECT 方法返回
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	if err == nil && resp.Status == connected {
+		// Http 连接建立之后，再继续建立我们的 rpc 连接，返回我们的 rpc 客户端
+		return NewClient(conn, opt)
+	}
+	if err == nil {
+		err = errors.New("unexpected HTTP response: " + resp.Status)
+	}
+	return nil, err
+}
+
+// DialHTTP 同样为了方便，给 NewHTTPClient 函数也包装一层
+func DialHTTP(network, address string, opts ...*Option) (*Client, error) {
+	return dialTimeout(NewHTTPClient, network, address, opts...)
+}
+
+// 最后，由于有两个 Dial（Dial、DialHTTP），把这两个方法再包装一层。
+
+// XDial 去掉 network 参数，通过指定的 address 格式区分网络。例：http@127.0.0.1:8080)
+func XDial(address string, opts ...*Option) (*Client, error) {
+	parts := strings.Split(address, "@")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("rpc client: wrong format '%s', expect protocol@addr", address)
+	}
+	protocol, addr := parts[0], parts[1]
+	switch protocol {
+	case "http":
+		// http 协议底层本身还是基于 tcp 的，所以这里网络要填入 tcp。
+		return DialHTTP("tcp", addr, opts...)
+	default:
+		return Dial(protocol, addr,opts...)
 	}
 }
