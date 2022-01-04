@@ -3,56 +3,90 @@ package main
 import (
 	"context"
 	"geerpc"
+	"geerpc/xclient"
 	"log"
 	"net"
-	"net/http"
 	"sync"
+	"time"
 )
 
 func main() {
-	addr := make(chan string)
-	go startClient(addr)
-	startServer(addr)
+	log.SetFlags(log.Lmsgprefix)
+	ch1 := make(chan string)
+	ch2 := make(chan string)
+	go startServer(ch1)
+	go startServer(ch2)
+	addr1 := <- ch1
+	addr2 := <- ch2
+
+	time.Sleep(time.Second)
+	call(addr1, addr2)
+	call(addr1, addr2)
 }
 
 func startServer(addr chan string) {
-	if err := geerpc.Register(new(Foo)); err != nil {
-		log.Fatal("register error:", err)
-	}
-	listener, err := net.Listen("tcp", ":9999")
-	if err != nil {
-		log.Println("监听端口失败")
-		return
-	}
+	listener, _ := net.Listen("tcp", ":0")
+	server := geerpc.NewServer()
+	server.Register(new(Foo))
 	addr <- listener.Addr().String()
-	// geerpc.Accept(listener) // 启动 rpc 服务
-	// 启动 rpc 服务 -> 启动 http 服务 + rpc 服务
-	geerpc.HandleHttp()
-	http.Serve(listener, nil)
+	server.Accept(listener)
 }
 
-func startClient(addr chan string) {
-	client, _ := geerpc.XDial("http@" + <-addr)
-	defer client.Close()
+func call(addr1, addr2 string) {
+	discovery := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
+	defer xc.Close()
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			args := Args{
+			args := &Args{
 				Num1: i,
-				Num2: 6,
+				Num2: i*i,
 			}
-			var reply int
-			// ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
-			// ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
-			if err := client.Call(context.Background(), "Foo.Sum", args, &reply); err != nil {
-				log.Fatal("call Foo.Bar error: ", err)
-			}
-			log.Printf("%d + %d = %d", args.Num1, args.Num2, reply)
+			foo(xc, context.Background(), "call", "Foo.Sum", args)
 		}(i)
 	}
 	wg.Wait()
+}
+
+func broadcast(addr1, addr2 string) {
+	discovery := xclient.NewMultiServerDiscovery([]string{"tcp@" + addr1, "tcp@" + addr2})
+	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
+	defer xc.Close()
+	var wg sync.WaitGroup
+	for i := 1; i <= 5; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			args := &Args{
+				Num1: i,
+				Num2: i*i,
+			}
+			foo(xc, context.Background(), "broadcast", "Foo.Sum", args)
+			ctx, _ := context.WithTimeout(context.Background(), time.Second*2)
+			foo(xc, ctx, "broadcast", "Foo.Sleep", &Args{Num1: i, Num2: i * i})
+		}(i)
+	}
+	wg.Wait()
+}
+
+func foo(xc *xclient.XClient, ctx context.Context, typ, serviceMethod string, args *Args) {
+	var reply int
+	var err error
+	switch typ {
+	case "call":
+		err = xc.Call(ctx, serviceMethod, args, &reply)
+	case "broadcast":
+		err = xc.Broadcast(ctx, serviceMethod, args, &reply)
+	}
+	if err != nil {
+		log.Printf("%s %s error: %v", typ, serviceMethod, err)
+	} else {
+		log.Printf("%s %s success: %d + %d = %d", typ, serviceMethod, args.Num1, args.Num2, reply)
+	}
+
 }
 
 type Foo int
@@ -62,6 +96,12 @@ type Args struct {
 }
 
 func (f Foo) Sum(args Args, reply *int) error {
+	*reply = args.Num1 + args.Num2
+	return nil
+}
+
+func (f Foo) Sleep(args Args, reply *int) error {
+	time.Sleep(time.Second * time.Duration(args.Num1))
 	*reply = args.Num1 + args.Num2
 	return nil
 }
