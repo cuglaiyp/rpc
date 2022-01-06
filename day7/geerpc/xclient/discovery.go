@@ -1,16 +1,15 @@
-package registry
+package xclient
 
 import (
-	"log"
-	"net/http"
-	"sort"
-	"strings"
+	"errors"
+	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
 
-// 前六天我们实现了服务端、客户端、服务注册、超时处理、支持 Http 协议、还有多服务器负载均衡
-// 今天我们完成最后一块：注册中心
+// 前五天实现了服务端、客户端、服务注册、超时控制、支持 Http 协议
+// 今天来完成多服务的负载均衡
 
 /*
 1. 在 codec.go 中
@@ -65,149 +64,89 @@ import (
       那么，XClient 的进行一次远程过程调用是这样的：
       	  XClient 使用 Discovery 通过“负载均衡策略”获取一个服务器的 addr，然后通过这个 addr 从上述 map 中取出一个 Client，然后利用这个 Client 发送对应的请求
 	- 在 xclient.go 中给 XClient 实现了一个 Broadcast 方法，可以将一个请求广播到所有服务器上，进行处理。
-9. 在 registry.go、discovery_gee.go 中
-	- 在 registry.go 中，实现了一个简易的注册中心，这个注册中心维护了一个 [服务器地址 -> 服务器地址 + 该服务上一次的心跳时间] 的 map，
-      并且通过实现 http.Handler 接口，对外提供 Http 服务，这样每个服务器可以通过 POST 请求发送心跳、服务发现模块通过 GET 请求拉取所有可用服务器的地址
-	- 在 registry.go 中，还暴露了对外的 Heartbeat 函数，使得服务可以使用该函数向指定注册中心发送指定服务的心跳
-	- 在 discovery_gee.go 中，实现了一个 GeeDiscovery 服务发现模块，继承了 MultiServersDiscovery 类，并重写了 Discovery 接口，
-      使得该模块可以使用 GET 请求从其维护的注册中心远程拉取可用服务
 */
 
-// 首先定义一个注册中心的实例
 
-type GeeRegistry struct {
-	timeout time.Duration          // 超时时间，服务注册后存活超过这个时间就死亡
-	mu      sync.Mutex             // 锁
-	servers map[string]*ServerItem // 由于存在超时时间等属性，服务器不能只用一个地址代替了，所以我们添加一个新的结构体
+// 多服务器的负载均衡首先得要有服务发现，我们先来实现一个简单的服务发现模块
+
+// Discovery 定义服务发现的通用接口
+type Discovery interface {
+	Refresh() error                      // 从远程结点更新服务
+	Update(servers []string) error       // 手动更新服务
+	Get(mode SelectMode) (string, error) // 根据负载均衡策略选择服务
+	GetAll() ([]string, error)           // 返回所有服务
 }
 
-type ServerItem struct {
-	Addr  string    // 对应服务器的地址
-	start time.Time // 该服务上一次心跳的时间
-}
+// SelectMode Discovery 的 Get 方法需要根据负载均衡策略来选择服务
+type SelectMode int
 
-// New 构造方法，timeout 为超时时间
-func New(timeout time.Duration) *GeeRegistry {
-	return &GeeRegistry{
-		timeout: timeout,
-		mu:      sync.Mutex{},
-		servers: map[string]*ServerItem{},
-	}
-}
-
-// 接着定义几个常量
-
+// 定义几种常见的负载均衡策略常量
 const (
-	defaultPath    = "/_geerpc_/registry"
-	defaultTimeout = time.Minute * 5 // 默认的超时时间为 5 分
+	RandomSelect SelectMode = iota
+	RoundRobinSelect
+	// ConsistentHash TODO
+	ConsistentHash
 )
 
-// 来一个默认的注册中心
+// 有了 Discovery 接口之后，我们可以来实现一个简单的实现类
 
-var DefaultRegistry = New(defaultTimeout)
+// MultiServersDiscovery 手工维护 servers 的注册中心
+type MultiServersDiscovery struct {
+	r       *rand.Rand   // RandomSelect 策略用来随机的字段
+	mu      sync.RWMutex // 同步锁
+	servers []string     // 维护的服务
+	index   int          // 用来记录被选择的服务的下标
+}
 
-// 注册中心功能有：添加服务实例、返回可用服务列表。给这两个功能加上
-
-func (g *GeeRegistry) putServer(addr string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	s := g.servers[addr]
-	if s == nil { // 不存在就添加
-		g.servers[addr] = &ServerItem{
-			Addr:  addr,
-			start: time.Now(),
-		}
-	} else { // 存在就更新时间
-		s.start = time.Now()
+func NewMultiServerDiscovery(servers []string) *MultiServersDiscovery {
+	d := &MultiServersDiscovery{
+		r:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		servers: servers,
+		mu:      sync.RWMutex{}, // 由于 Go 存在默认值，所以也可以不用显示的构造
 	}
+	d.index = d.r.Intn(math.MaxInt32 - 1)
+	return d
 }
 
-func (g *GeeRegistry) aliveServers() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var servers []string
-	for addr, si := range g.servers {
-		if g.timeout == 0 || si.start.Add(g.timeout).After(time.Now()) { // 注册中心没有超时时间或者服务还没失活
-			servers = append(servers, addr)
-		} else { // 删除已经不可用的服务
-			delete(g.servers, addr)
-		}
-	}
-	// 保证每次调用的相对顺序不变（幂等？）
-	sort.Strings(servers)
-	return servers
-}
-
-// 注册中心基础功能都完成了，接下来让它能够对外提供服务。这里为了实现上的简单，采用 Http 协议，且所有的有用信息都承载在 HTTP Header 中
-
-// 实现 http.Handler 接口
-var _ http.Handler = (*GeeRegistry)(nil)
-
-// Get：返回所有可用的服务列表，通过自定义字段 X-Geerpc-Servers 承载。
-// Post：添加服务实例或发送心跳，通过自定义字段 X-Geerpc-Server 承载。
-func (g *GeeRegistry) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	switch req.Method {
-	case http.MethodGet:
-		// 将所有可用服务写在响应头上
-		w.Header().Set("X-Geerpc-Servers", strings.Join(g.aliveServers(), ","))
-	case http.MethodPost:
-		// 从请求头上获取服务
-		addr := req.Header.Get("X-Geerpc-Server")
-		if addr == "" {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		g.putServer(addr)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
-}
-
-// 为注册中心添加映射路径
-
-func (g *GeeRegistry) HandleHTTP(registryPath string)  {
-	http.Handle(registryPath, g)
-	log.Println("rpc registry path:", registryPath)
-}
-
-// 实现包名调用简易方法
-
-func HandleHTTP() {
-	DefaultRegistry.HandleHTTP(defaultPath)
-}
-
-
-// 实现一个包名调用的辅助函数（helper function），便于服务启动后定时向注册中心发送心跳
-
-// Heartbeat registry 注册中心地址，addr 服务地址
-func Heartbeat(registry, addr string, duration time.Duration) {
-	if duration == 0 {
-		//  没给超时时间的话，就以默认的超时间发一次，但是不能卡着点发，因为发送还需要时间
-		duration = defaultTimeout - time.Duration(1) * time.Minute
-	}
-	err := sendHeartbeat(registry, addr)
-	go func() {
-		ticker := time.NewTicker(duration) // 来一个计时器
-		for err == nil { // 没有错误就循环定时发送心跳
-			<- ticker.C
-			err = sendHeartbeat(registry, addr)
-		}
-	}()
-}
-
-// 向注册中心发送心跳
-
-func sendHeartbeat(registry, addr string) error {
-	log.Println(addr, "send heart beat to registry", registry)
-	// 前面约定过，使用 Http 协议发送心跳
-	client := http.Client{}
-	request, _ := http.NewRequest(http.MethodPost, registry, nil)
-	request.Header.Set("X-Geerpc-Server", addr)
-	if _, err := client.Do(request); err != nil {
-		log.Println("rpc server: heart beat err: ", err)
-		return err
-	}
+func (m *MultiServersDiscovery) Refresh() error {
+	// 因为是手工维护的，远程刷新并不需要，所以不做处理
 	return nil
 }
 
-// 注册中心完成之后，我们的服务发现模块还是个简易版本的，现在给它完成
+func (m *MultiServersDiscovery) Update(servers []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.servers = servers
+	return nil
+}
+
+func (m *MultiServersDiscovery) Get(mode SelectMode) (string, error) {
+	// TODO 思考 Get 和 GetAll 使用的锁为什么不一样？这个里面会修改 m.index，所以需要上写锁
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.servers)
+	if n == 0 {
+		return "", errors.New("rpc discovery: no available servers")
+	}
+	switch mode {
+	case RandomSelect:
+		return m.servers[m.r.Intn(n)], nil
+	case RoundRobinSelect:
+		s := m.servers[m.index%n]
+		m.index = (m.index + 1) % n
+		return s, nil
+	default:
+		return "", errors.New("rpc discovery: no supported select mode")
+	}
+}
+
+func (m *MultiServersDiscovery) GetAll() ([]string, error) {
+	m.mu.RLock()
+	m.mu.RUnlock()
+	srvs := make([]string, len(m.servers), len(m.servers))
+	// 返回拷贝
+	copy(srvs, m.servers)
+	return srvs, nil
+}
+
+var _ Discovery = (*MultiServersDiscovery)(nil)
