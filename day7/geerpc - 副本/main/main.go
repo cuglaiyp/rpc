@@ -3,52 +3,25 @@ package main
 import (
 	"context"
 	"geerpc"
-	"geerpc/registry"
 	"geerpc/xclient"
 	"log"
 	"net"
-	"net/http"
 	"sync"
 	"time"
 )
 
 func main() {
 	log.SetFlags(log.Lmsgprefix)
-	registryAddr := "http://localhost:9999/_geerpc_/registry"
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go startRegistry(&wg)
-	wg.Wait()
-	time.Sleep(time.Second)
-	wg.Add(2)
-	go startServer(registryAddr, &wg)
-	go startServer(registryAddr, &wg)
-	wg.Wait()
-
-	time.Sleep(time.Second)
-	for{
-
-		call(registryAddr)
-		//broadcast(registryAddr)
-	}
-
+	startServer()
 }
 
-func startServer(registryAddr string, wg *sync.WaitGroup) {
-	listener, _ := net.Listen("tcp", ":0")
+func startServer() {
+	listener, _ := net.Listen("tcp", "localhost:9998")
 	server := geerpc.NewServer()
 	server.Register(new(Foo))
-	registry.Heartbeat(registryAddr, "tcp@" + listener.Addr().String(), 0)
-	wg.Done()
 	server.Accept(listener)
 }
 
-func startRegistry(wg *sync.WaitGroup) {
-	l, _ := net.Listen("tcp", ":9999")
-	registry.HandleHTTP()
-	wg.Done()
-	_ = http.Serve(l, nil)
-}
 
 func call(registry string) {
 	discovery := xclient.NewGeeRegistryDiscovery(registry, 0)

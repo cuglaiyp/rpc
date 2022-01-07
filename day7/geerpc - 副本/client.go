@@ -3,7 +3,6 @@ package geerpc
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"geerpc/codec"
@@ -257,11 +256,13 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 		return nil, err
 	}
 	// 协商编码
-	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+	/*jsonEnc := json.NewEncoder(conn)
+	if err := jsonEnc.Encode(opt); err != nil {
 		log.Println("rpc client: option err: ", err)
 		_ = conn.Close()
 		return nil, err
-	}
+	}*/
+
 	cc := codecFunc(conn)
 	c := &Client{
 		cc:       cc,
@@ -460,7 +461,7 @@ func (c *Client) Call(ctx context.Context, serviceMethod string, args, reply int
 func NewHTTPClient(conn net.Conn, opt *Option) (*Client, error) {
 	// 给服务端写一句话。使用 CONNECT 方法的报文格式
 	// 写入 http 请求消息，格式为：请求行\n请求头（头部行）\n请求体。由于没有加请求头（头部行），所以这里末尾写了两个\n
-	io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
+	 io.WriteString(conn, fmt.Sprintf("CONNECT %s HTTP/1.0\n\n", defaultRPCPath))
 	// 要求服务端以 CONNECT 方法返回
 	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
 	if err == nil && resp.Status == connected {
@@ -492,6 +493,6 @@ func XDial(address string, opts ...*Option) (*Client, error) {
 		// http 协议底层本身还是基于 tcp 的，所以这里网络要填入 tcp。
 		return DialHTTP("tcp", addr, opts...)
 	default:
-		return Dial(protocol, addr, opts...)
+		return Dial(protocol, addr,opts...)
 	}
 }

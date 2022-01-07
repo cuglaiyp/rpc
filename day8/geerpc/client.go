@@ -262,6 +262,16 @@ func NewClient(conn net.Conn, opt *Option) (*Client, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	// 接收到服务端的确认消息，完成两次握手。如果没有这第二次握手，
+	// 会产生 rpc server: read header error: gob: unknown type id or corrupted data 的粘包问题
+	// 		- 当客户端消息发送过快服务端消息积压时（例：Option|Header|Body|Header|Body），
+	//		服务端使用json解析Option，json.Decode()调用conn.read()读取数据到内部的缓冲区（例：Option|Header），
+	//		此时后续的RPC消息就不完整了(Body|Header|Body)。 示例代码中客户端简单的使用time.sleep()方式隔离协议交换阶段与RPC消息阶段，减少这种问题发生的可能。
+	if err := json.NewDecoder(conn).Decode(opt); err != nil {
+		log.Println("rpc client: option err: ", err)
+		_ = conn.Close()
+		return nil, err
+	}
 	cc := codecFunc(conn)
 	c := &Client{
 		cc:       cc,

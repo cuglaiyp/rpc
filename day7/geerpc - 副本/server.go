@@ -105,6 +105,7 @@ func (s *Server) ServeConn(conn net.Conn) {
 		log.Println("rpc server: option error: ", err)
 		return
 	}
+	fmt.Printf("%#v", opt)
 	// 2. 判断魔数
 	if opt.MagicNumber != MagicNumber {
 		log.Printf("rpc server: invalid magic number %x", opt.MagicNumber)
@@ -117,6 +118,10 @@ func (s *Server) ServeConn(conn net.Conn) {
 		return
 	}
 	cc := newCodecFunc(conn)
+	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+		log.Println("rpc server: option error: ", err)
+		return
+	}
 	s.serveCodec(cc, opt.HandleTimeout)
 }
 

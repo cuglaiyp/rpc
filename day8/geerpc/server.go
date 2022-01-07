@@ -117,6 +117,11 @@ func (s *Server) ServeConn(conn net.Conn) {
 		return
 	}
 	cc := newCodecFunc(conn)
+	// 给客户端一个响应，说明此次 Option 是 ok 的
+	if err := json.NewEncoder(conn).Encode(opt); err != nil {
+		log.Println("rpc server: option error: ", err)
+		return
+	}
 	s.serveCodec(cc, opt.HandleTimeout)
 }
 
