@@ -15,36 +15,20 @@ import (
 func main() {
 	log.SetFlags(log.Lmsgprefix)
 	registryAddr := "localhost:2181"
-	/*var wg sync.WaitGroup
-	wg.Add(1)
-	go startRegistry(&wg)
-	wg.Wait()
-	time.Sleep(time.Second)
-	wg.Add(2)
-	go startServer(registryAddr, &wg)
-	go startServer(registryAddr, &wg)
-	wg.Wait()
-
-	time.Sleep(time.Second)*/
-
-	call(registryAddr)
-	broadcast(registryAddr)
-	time.Sleep(time.Second * 5)
-	call(registryAddr)
-	broadcast(registryAddr)
+	startServer(registryAddr)
 }
 
-func startServer(registryAddr string, wg *sync.WaitGroup) {
+func startServer(registryAddr string) {
 	listener, _ := net.Listen("tcp", ":0")
 	server := geerpc.NewServer()
 	server.Register(new(Foo))
 	//registry.Heartbeat(registryAddr, "tcp@" + listener.Addr().String(), 0)
 	//registry.PutZkServer(listener.Addr().String())
 	zk := registry.NewZkClient(registryAddr, 30*time.Second)
-	zk.PutServer(listener.Addr().String())
-	wg.Done()
+	zk.PutServer("tcp@" + listener.Addr().String())
 	server.Accept(listener)
 }
+
 
 func startRegistry(wg *sync.WaitGroup) {
 	l, _ := net.Listen("tcp", ":9999")
@@ -55,7 +39,7 @@ func startRegistry(wg *sync.WaitGroup) {
 
 func call(registry string) {
 	//discovery := xclient.NewGeeRegistryDiscovery(registry, 0)
-	discovery := xclient.NewZkRegistryDiscovery("localhost:2181", 30*time.Second)
+	discovery := xclient.NewZkRegistryDiscovery("localhost:2181", 0)
 	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
 	defer xc.Close()
 	var wg sync.WaitGroup
@@ -65,7 +49,7 @@ func call(registry string) {
 			defer wg.Done()
 			args := &Args{
 				Num1: i,
-				Num2: i * i,
+				Num2: i*i,
 			}
 			foo(xc, context.Background(), "call", "Foo.Sum", args)
 		}(i)
@@ -74,7 +58,7 @@ func call(registry string) {
 }
 
 func broadcast(registry string) {
-	discovery := xclient.NewZkRegistryDiscovery("localhost:2181", 30*time.Second)
+	discovery := xclient.NewZkRegistryDiscovery("localhost:2182", 0)
 	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
 	defer xc.Close()
 	var wg sync.WaitGroup
@@ -84,7 +68,7 @@ func broadcast(registry string) {
 			defer wg.Done()
 			args := &Args{
 				Num1: i,
-				Num2: i * i,
+				Num2: i*i,
 			}
 			foo(xc, context.Background(), "broadcast", "Foo.Sum", args)
 			ctx, _ := context.WithTimeout(context.Background(), time.Second*2)

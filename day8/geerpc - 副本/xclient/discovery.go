@@ -75,7 +75,6 @@ type Discovery interface {
 	Update(servers []string) error       // 手动更新服务
 	Get(mode SelectMode, serviceMethod ...string) (string, error) // 根据负载均衡策略选择服务
 	GetAll() ([]string, error)           // 返回所有服务
-	Close()
 }
 
 // SelectMode Discovery 的 Get 方法需要根据负载均衡策略来选择服务
@@ -100,7 +99,6 @@ type MultiServersDiscovery struct {
 	hmap    *Map         // 一致性 hash 类
 }
 
-
 func NewMultiServerDiscovery(servers []string) *MultiServersDiscovery {
 	d := &MultiServersDiscovery{
 		r:       rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -118,10 +116,6 @@ func (m *MultiServersDiscovery) Refresh() error {
 	return nil
 }
 
-func (m *MultiServersDiscovery) Close() {
-}
-
-
 func (m *MultiServersDiscovery) Update(servers []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -135,7 +129,7 @@ func (m *MultiServersDiscovery) Get(mode SelectMode, serviceMethod ...string) (s
 	defer m.mu.Unlock()
 	n := len(m.servers)
 	if n == 0 {
-		return "", errors.New("rpc discovery: no available providers")
+		return "", errors.New("rpc discovery: no available provides")
 	}
 	switch mode {
 	case RandomSelect:
