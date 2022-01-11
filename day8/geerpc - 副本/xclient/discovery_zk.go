@@ -1,22 +1,17 @@
 package xclient
 
 import (
+	"geerpc/config"
 	"github.com/go-zookeeper/zk"
 	"log"
 	"time"
 )
 
-const (
-	root     = "/geerpc"   // zookeeper 的根结点
-	providers = "/providers" // 二级结点
-)
-
 type ZkRegistryDiscovery struct {
-	*MultiServersDiscovery // 继承
-	// registry               string        // 注册中心地址，会从这个地址更新可用服务
-	conn       *zk.Conn      // 我们自己的注册中心是 Http 服务，而 Zookeeper 就维护一个连接
-	timeout    time.Duration // 服务列表的过期时间
-	lastUpdate time.Time     // 上一次更新时间从注册中心拉取服务的时间
+	*GeeRegistryDiscovery               // 继承这个，可以复用 Update 方法
+	conn                  *zk.Conn      // 我们自己的注册中心是 Http 服务，而 Zookeeper 就维护一个连接
+	timeout               time.Duration // 服务列表的过期时间
+	lastUpdate            time.Time     // 上一次更新时间从注册中心拉取服务的时间
 }
 
 // NewZkRegistryDiscovery 同样来一个构造函数
@@ -29,19 +24,26 @@ func NewZkRegistryDiscovery(registryAddr string, timeout time.Duration) *ZkRegis
 		log.Printf("rpc discovery_zk: cannot connect: %s: %s", registryAddr, err.Error())
 		return nil
 	}
-	// 建立服务的根结点，保证所有服务都注册在这个根结点上
-	z := &ZkRegistryDiscovery{
-		MultiServersDiscovery: NewMultiServerDiscovery([]string{}),
-		conn:                  conn,
-		timeout:               timeout,
+	g := &ZkRegistryDiscovery{
+		GeeRegistryDiscovery: NewGeeRegistryDiscovery(registryAddr, timeout),
+		conn:                 conn,
+		timeout:              timeout,
 	}
-	_, _, event, err := conn.ChildrenW(root + providers)
-	go func(e <-chan zk.Event) {
-		<-e
-		z.refreshFromZk()
+	go g.watchProviders()
+	return g
+}
 
-	}(event)
-	return z
+func (g *ZkRegistryDiscovery) watchProviders() {
+	for {
+		// 循环监听提供服务结点的子结点是否发生变化（因为这个监听是一次性的，使用之后就会失效，所以需要循环注册）
+		_, _, event, err := g.conn.ChildrenW(config.ZkProviderPath)
+		if err != nil {
+			return
+		}
+		<-event
+		// 子结点产生了变化，就从服务器拉取
+		g.refreshFromZk()
+	}
 }
 
 // 重写服务发现接口的方法
@@ -52,28 +54,20 @@ func (g *ZkRegistryDiscovery) Refresh() error {
 	if g.lastUpdate.Add(g.timeout).After(time.Now()) { // 服务列表还没过期，不用更新
 		return nil
 	}
-	log.Println("rpc registry: refresh provides from registry")
+	log.Println("rpc discovery: refresh provides from registry")
 	// resp, err := http.Get(g.registry) // 向注册中心发送 GET 请求，以拉取可用服务列表
-
-	return nil
+	return g.refreshFromZk()
 }
 
 func (g *ZkRegistryDiscovery) refreshFromZk() error {
-	servers, _, err := g.conn.Children(root + providers)
+	servers, _, err := g.conn.Children(config.ZkProviderPath)
 	if err != nil {
-		log.Println("rpc registry refresh err:", err)
+		log.Println("rpc discovery: refresh err:", err)
 		return err
 	}
 	g.servers = servers
 	g.lastUpdate = time.Now() // 更新 上次更新 时间
-	return nil
-}
-
-func (g *ZkRegistryDiscovery) Update(servers []string) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.servers = servers
-	g.lastUpdate = time.Now()
+	// go g.watchProviders() // 监听的第二种方案：每次 refresh 的时候就启动一个协程监听 // 不好：因为一旦结点没有变化，而由于频繁的 Get 操作，会导致开启很多协程进行阻塞
 	return nil
 }
 
@@ -90,3 +84,10 @@ func (g *ZkRegistryDiscovery) GetAll() ([]string, error) {
 	}
 	return g.MultiServersDiscovery.GetAll()
 }
+
+func (g *ZkRegistryDiscovery) Close() error {
+	g.conn.Close()
+	return nil
+}
+
+var _ Discovery = (*ZkRegistryDiscovery)(nil)

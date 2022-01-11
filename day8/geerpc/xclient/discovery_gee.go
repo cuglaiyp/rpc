@@ -38,7 +38,7 @@ func (g *GeeRegistryDiscovery) Refresh() error {
 	if g.lastUpdate.Add(g.timeout).After(time.Now()) { // 服务列表还没过期，不用更新
 		return nil
 	}
-	log.Println("rpc registry: refresh provides from registry", g.registry)
+	log.Println("rpc registry: refresh providers from registry", g.registry)
 	resp, err := http.Get(g.registry) // 向注册中心发送 GET 请求，以拉取可用服务列表
 	if err != nil {
 		log.Println("rpc registry refresh err:", err)

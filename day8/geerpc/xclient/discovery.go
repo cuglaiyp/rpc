@@ -3,6 +3,7 @@ package xclient
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"sync"
@@ -71,11 +72,11 @@ import (
 
 // Discovery 定义服务发现的通用接口
 type Discovery interface {
+	io.Closer
 	Refresh() error                      // 从远程结点更新服务
 	Update(servers []string) error       // 手动更新服务
 	Get(mode SelectMode, serviceMethod ...string) (string, error) // 根据负载均衡策略选择服务
 	GetAll() ([]string, error)           // 返回所有服务
-	Close()
 }
 
 // SelectMode Discovery 的 Get 方法需要根据负载均衡策略来选择服务
@@ -118,7 +119,8 @@ func (m *MultiServersDiscovery) Refresh() error {
 	return nil
 }
 
-func (m *MultiServersDiscovery) Close() {
+func (m *MultiServersDiscovery) Close() error {
+	return nil
 }
 
 

@@ -14,23 +14,20 @@ import (
 
 func main() {
 	log.SetFlags(log.Lmsgprefix)
-	registryAddr := "localhost:2181"
-	/*var wg sync.WaitGroup
-	wg.Add(1)
+	registryAddr := "localhost:2379"
+	var wg sync.WaitGroup
+/*	wg.Add(1)
 	go startRegistry(&wg)
-	wg.Wait()
+	wg.Wait()*/
 	time.Sleep(time.Second)
 	wg.Add(2)
 	go startServer(registryAddr, &wg)
 	go startServer(registryAddr, &wg)
 	wg.Wait()
 
-	time.Sleep(time.Second)*/
-
+	time.Sleep(time.Second)
 	call(registryAddr)
-	broadcast(registryAddr)
-	time.Sleep(time.Second * 5)
-	call(registryAddr)
+	time.Sleep(time.Second * 10)
 	broadcast(registryAddr)
 }
 
@@ -40,8 +37,9 @@ func startServer(registryAddr string, wg *sync.WaitGroup) {
 	server.Register(new(Foo))
 	//registry.Heartbeat(registryAddr, "tcp@" + listener.Addr().String(), 0)
 	//registry.PutZkServer(listener.Addr().String())
-	zk := registry.NewZkClient(registryAddr, 30*time.Second)
-	zk.PutServer(listener.Addr().String())
+	etcd := registry.NewEtcdClient([]string{registryAddr}, 5*time.Second)
+	defer etcd.Close()
+	etcd.PutServer("tcp@" + listener.Addr().String())
 	wg.Done()
 	server.Accept(listener)
 }
@@ -55,7 +53,7 @@ func startRegistry(wg *sync.WaitGroup) {
 
 func call(registry string) {
 	//discovery := xclient.NewGeeRegistryDiscovery(registry, 0)
-	discovery := xclient.NewZkRegistryDiscovery("localhost:2181", 30*time.Second)
+	discovery := xclient.NewEtcdRegistryDiscovery(registry, 10*time.Second)
 	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
 	defer xc.Close()
 	var wg sync.WaitGroup
@@ -74,7 +72,7 @@ func call(registry string) {
 }
 
 func broadcast(registry string) {
-	discovery := xclient.NewZkRegistryDiscovery("localhost:2181", 30*time.Second)
+	discovery := xclient.NewEtcdRegistryDiscovery(registry, 10*time.Second)
 	xc := xclient.NewXClient(discovery, xclient.RandomSelect, nil)
 	defer xc.Close()
 	var wg sync.WaitGroup

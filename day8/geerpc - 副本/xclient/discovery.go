@@ -3,6 +3,7 @@ package xclient
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"sync"
@@ -71,6 +72,7 @@ import (
 
 // Discovery 定义服务发现的通用接口
 type Discovery interface {
+	io.Closer
 	Refresh() error                      // 从远程结点更新服务
 	Update(servers []string) error       // 手动更新服务
 	Get(mode SelectMode, serviceMethod ...string) (string, error) // 根据负载均衡策略选择服务
@@ -99,6 +101,7 @@ type MultiServersDiscovery struct {
 	hmap    *Map         // 一致性 hash 类
 }
 
+
 func NewMultiServerDiscovery(servers []string) *MultiServersDiscovery {
 	d := &MultiServersDiscovery{
 		r:       rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -116,6 +119,11 @@ func (m *MultiServersDiscovery) Refresh() error {
 	return nil
 }
 
+func (m *MultiServersDiscovery) Close() error {
+	return nil
+}
+
+
 func (m *MultiServersDiscovery) Update(servers []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -129,7 +137,7 @@ func (m *MultiServersDiscovery) Get(mode SelectMode, serviceMethod ...string) (s
 	defer m.mu.Unlock()
 	n := len(m.servers)
 	if n == 0 {
-		return "", errors.New("rpc discovery: no available provides")
+		return "", errors.New("rpc discovery: no available providers")
 	}
 	switch mode {
 	case RandomSelect:

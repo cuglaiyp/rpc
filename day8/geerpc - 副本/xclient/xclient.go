@@ -2,6 +2,7 @@ package xclient
 
 import (
 	"context"
+	"errors"
 	. "geerpc"
 	"io"
 	"reflect"
@@ -29,6 +30,7 @@ func (xc *XClient) Close() error {
 		_ = client.Close()
 		delete(xc.clients, nm)
 	}
+	xc.d.Close()
 	return nil
 }
 
@@ -92,6 +94,9 @@ func (xc *XClient) Broadcast(ctx context.Context, serviceMethod string, args, re
 	servers, err := xc.d.GetAll()
 	if err != nil {
 		return err
+	}
+	if len(servers) == 0 {
+		return errors.New("rpc client: no avilable server")
 	}
 	/*
 		// 向所有服务器请求
