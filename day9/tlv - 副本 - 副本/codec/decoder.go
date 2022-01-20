@@ -3,7 +3,6 @@ package codec
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"reflect"
@@ -13,108 +12,80 @@ import (
 type Decoder struct {
 	reader io.Reader
 	buf    []byte
-	offset int // read offset
 }
 
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
 		reader: r,
 		buf:    make([]byte, 1024),
-		offset: 0,
 	}
 }
 
-// Decode 解码器的顶层入口
 func (d *Decoder) Decode(res interface{}) error {
 	resValue := reflect.ValueOf(res)
 	if resValue.Kind() != reflect.Ptr {
 		return errors.New("只能是指针类型")
 	}
 
-	tag, length, err := d.readTL()
-	if err != nil {
-		return err
+	var data []byte
+	for {
+		n, err := d.reader.Read(d.buf)
+		data = append(data, d.buf[:n]...)
+		if n < len(d.buf) {
+			break
+		}
+		if err != nil && err != io.EOF {
+			log.Printf("出错")
+			break
+		}
 	}
-	n, err := io.ReadFull(d.reader, d.buf[d.offset:d.offset+length])
-	if n < length || err != nil {
-		return err
-	}
-	decodeTlv(d.buf[d.offset:d.offset+length], tag, reflect.Indirect(resValue))
-	d.reset()
+
+	d.decode(data, reflect.Indirect(resValue))
 	return nil
 }
 
-// DecodeBytes 解码器的顶层入口
 func (d *Decoder) DecodeBytes(data []byte, res interface{}) {
 	resValue := reflect.ValueOf(res)
 	if resValue.Kind() != reflect.Ptr {
 		return
 	}
-	decode(data, reflect.Indirect(resValue))
+	d.decode(data, reflect.Indirect(resValue))
 }
 
-
-
-func (d *Decoder) readTL() (*core.Tag, int, error) {
-	var tag *core.Tag
-	var length int
-	tagStart := d.offset
-	for {
-		n, err := io.ReadFull(d.reader, d.buf[d.offset:d.offset+1])
-		if n == 0 || err != nil {
-			return nil, 0, fmt.Errorf("从流中读取错误")
+func (d *Decoder) decode(data []byte, resElemValue reflect.Value) int {
+	isFindTag := false
+	tag := &core.Tag{}
+	lenStart, valueStart, valueLen := 0, 0, 0
+	curIdx := 0
+	for ; curIdx < len(data); curIdx++ {
+		//计算tag
+		if isFindTag == false {
+			if data[curIdx]&0x80 == 0 {
+				isFindTag = true
+				lenStart = curIdx + 1
+				tag = parseTag(data[0:lenStart])
+			}
+			continue
 		}
-		d.offset++
-		if d.buf[d.offset-1]&0x80 == 0 {
-			tag = parseTag(d.buf[tagStart:d.offset])
+
+		//计算length
+		if data[curIdx]&0x80 == 0 {
+			valueStart = curIdx + 1
+			valueLen = parseLength(data[lenStart:valueStart])
+			curIdx = valueStart + valueLen
+			if curIdx > len(data) {
+				log.Println("数据不完整")
+				return 0
+			}
+			// 解析 value
+			d.decode0(data[valueStart:curIdx], tag, resElemValue)
 			break
 		}
 	}
-	lenStart := d.offset
-	for {
-		n, err := io.ReadFull(d.reader, d.buf[d.offset:d.offset+1])
-		if n == 0 || err != nil {
-			return nil, 0, fmt.Errorf("从流中读取错误")
-		}
-		d.offset++
-		if d.buf[d.offset-1]&0x80 == 0 {
-			length = parseLength(d.buf[lenStart:d.offset])
-			break
-		}
-
-	}
-	return tag, length, nil
+	return curIdx
 }
 
-
-
-func decode(buf []byte, resElemValue reflect.Value) int {
-	var tag *core.Tag
-	var length int
-	offset := 0
-	tagStart := offset
-	for {
-		if buf[offset]&0x80 == 0 {
-			offset++
-			tag = parseTag(buf[tagStart:offset])
-			break
-		}
-		offset++
-	}
-	lenStart := offset
-	for {
-		if buf[offset]&0x80 == 0 {
-			offset++
-			length = parseLength(buf[lenStart:offset])
-			break
-		}
-		offset++
-	}
-	decodeTlv(buf[offset:offset+length], tag, resElemValue)
-	return length + offset
-}
-
-func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
+func (d *Decoder) decode0(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 	kind := resElemValue.Kind()
 	switch kind {
 	case reflect.Int8:
@@ -131,40 +102,32 @@ func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 		}
 	case reflect.Int16:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
-			val := make([]byte, 2)
-			copy(val[2-len(data):], data)
-			resElemValue.Set(reflect.ValueOf(int16(binary.BigEndian.Uint16(val))))
+			resElemValue.Set(reflect.ValueOf(int16(binary.BigEndian.Uint16(data))))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
 		}
 	case reflect.Uint16:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
-			val := make([]byte, 2)
-			copy(val[2-len(data):], data)
-			resElemValue.Set(reflect.ValueOf(binary.BigEndian.Uint16(val)))
+			resElemValue.Set(reflect.ValueOf(binary.BigEndian.Uint16(data)))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
 		}
 	case reflect.Int32:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
-			val := make([]byte, 4)
-			copy(val[4-len(data):], data)
-			resElemValue.Set(reflect.ValueOf(int32(binary.BigEndian.Uint32(val))))
+			resElemValue.Set(reflect.ValueOf(int32(binary.BigEndian.Uint32(data))))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
 		}
 	case reflect.Uint32:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
-			val := make([]byte, 4)
-			copy(val[4-len(data):], data)
-			resElemValue.Set(reflect.ValueOf(binary.BigEndian.Uint32(val)))
+			resElemValue.Set(reflect.ValueOf(binary.BigEndian.Uint32(data)))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
 		}
 	case reflect.Int64:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
 			val := make([]byte, 8)
-			copy(val[8-len(data):], data)
+			copy(val, data)
 			resElemValue.Set(reflect.ValueOf(int64(binary.BigEndian.Uint64(val))))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
@@ -172,7 +135,7 @@ func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 	case reflect.Uint64:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
 			val := make([]byte, 8)
-			copy(val[8-len(data):], data)
+			copy(val, data)
 			resElemValue.Set(reflect.ValueOf(binary.BigEndian.Uint64(val)))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
@@ -180,7 +143,7 @@ func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 	case reflect.Int:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
 			val := make([]byte, 8)
-			copy(val[8-len(data):], data)
+			copy(val, data)
 			resElemValue.Set(reflect.ValueOf(int(binary.BigEndian.Uint64(val))))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
@@ -188,7 +151,7 @@ func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 	case reflect.Uint:
 		if _, ok := core.IntKinds[tag.TagValue]; ok {
 			val := make([]byte, 8)
-			copy(val[8-len(data):], data)
+			copy(val, data)
 			resElemValue.Set(reflect.ValueOf(uint(binary.BigEndian.Uint64(val))))
 		} else {
 			log.Printf("目标类型[%s]与编码类型[%s]不匹配！\n", kind.String(), tag.TagValue.String())
@@ -202,10 +165,10 @@ func decodeTlv(data []byte, tag *core.Tag, resElemValue reflect.Value) {
 			return
 		}
 		filedNums := resElemValue.NumField()
-		length := 0
+		preIdx := 0
 		for i := 0; i < filedNums; i++ {
 			fieldi := resElemValue.Field(i)
-			length += decode(data[length:], reflect.Indirect(fieldi))
+			preIdx += d.decode(data[preIdx:], fieldi)
 		}
 	default:
 		log.Printf("tlv decoder: 未支持类型[%s]！\n", kind.String())
@@ -251,6 +214,6 @@ func parseLength(lenBytes []byte) (length int) {
 	return length
 }
 
-func (d *Decoder) reset() {
-	d.offset = 0
+func (d *Decoder) Read(output interface{}) {
+
 }

@@ -12,12 +12,14 @@ import (
 type Decoder struct {
 	reader io.Reader
 	buf    []byte
+	offset int // read offset
 }
 
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
 		reader: r,
 		buf:    make([]byte, 1024),
+		offset: 0,
 	}
 }
 
@@ -27,21 +29,45 @@ func (d *Decoder) Decode(res interface{}) error {
 		return errors.New("只能是指针类型")
 	}
 
-	var data []byte
-	for {
-		n, err := d.reader.Read(d.buf)
-		data = append(data, d.buf[:n]...)
-		if n < len(d.buf) {
-			break
-		}
-		if err != nil && err != io.EOF {
-			log.Printf("出错")
-			break
-		}
+	tag, length := d.readTL()
+	n, err := io.ReadFull(d.reader, d.buf[d.offset:d.offset+length])
+	if n < length || err != nil {
+		return err
 	}
-
-	d.decode(data, reflect.Indirect(resValue))
+	d.decode0(d.buf[d.offset:], tag, reflect.Indirect(resValue))
 	return nil
+}
+
+func (d *Decoder) readTL() (*core.Tag, int) {
+	var tag *core.Tag
+	var length int
+
+	for {
+		n, _ := io.ReadFull(d.reader, d.buf[d.offset:d.offset+1])
+		if n == 0 {
+			return nil, 0
+		}
+		if d.buf[d.offset]&0x80 == 0 {
+			d.offset++
+			tag = parseTag(d.buf[0:d.offset])
+			break
+		}
+		d.offset++
+	}
+	lenStart := d.offset
+	for {
+		n, _ := io.ReadFull(d.reader, d.buf[len(d.buf):1])
+		if n == 0 {
+			return nil, 0
+		}
+		if d.buf[d.offset]&0x80 == 0 {
+			d.offset++
+			length = parseLength(d.buf[lenStart:d.offset])
+			break
+		}
+		d.offset++
+	}
+	return tag, length
 }
 
 func (d *Decoder) DecodeBytes(data []byte, res interface{}) {

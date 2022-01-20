@@ -174,14 +174,14 @@ func (e *Encoder) EncodeObj(input interface{}) ([]byte, error) {
 }
 
 func (e *Encoder) Encode(input interface{}) error {
-	bytes, err := e.EncodeObj(input)
+	byts, err := e.EncodeObj(input)
 	if err != nil {
 		log.Printf("写入失败")
 		return err
 	}
-	bytes = append(bytes, )
 
-	if _, err = e.writer.Write(bytes); err != nil {
+
+	if _, err = e.writer.Write(byts); err != nil {
 		log.Printf("写入失败")
 		return err
 	}

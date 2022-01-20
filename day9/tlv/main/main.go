@@ -21,21 +21,30 @@ func main() {
 		return
 	}
 	conn, err := listen.Accept()
+
 	if err != nil {
 		fmt.Printf(err.Error())
 		return
 	}
 
-	dec := codec.NewDecoder(conn)
+/*	args := Args{
+		Arg1: 22,
+		Arg2: "sds ",
+		Inner: Inner{
+			Arg3: 23,
+		},
+		Arg4: 2,
+	}*/
 	var args Args
-	err = dec.Decode(&args)
+	decoder := codec.NewDecoder(conn)
+	decoder.Decode(&args)
 	fmt.Println(args)
-	conn.Close()
 
+	conn.Close()
 }
 
 type Args struct {
-	Arg1  int64
+	Arg1  int32
 	Arg2  string
 	Inner Inner
 	Arg4  uint8
