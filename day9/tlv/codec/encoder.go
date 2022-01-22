@@ -153,6 +153,8 @@ func (e *Encoder) EncodeObj(input interface{}) ([]byte, error) {
 	inVal := reflect.Indirect(reflect.ValueOf(input))
 	kind := inVal.Kind()
 	switch kind {
+	case reflect.Invalid:
+		return e.EncodePrimitive(core.Invalid, []byte{}), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return e.EncodeVarInt(inVal.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
