@@ -44,10 +44,11 @@ func (g *EtcdRegistryDiscovery) watchProviders(ctx context.Context) {
 	watchChan := clientv3.NewWatcher(g.client).Watch(context.TODO(), config.EtcdProviderPath, clientv3.WithPrefix())
 	select {
 	case <-watchChan:
+		// 消耗掉 chan，别阻塞
 		for _ = range watchChan {
 			// 这里可以做得更精细，因为 etcd 会给出变化的 key，我们权且简单处理
 			// 结点产生了变化，就从服务器拉取
-		} // 消耗掉 chan，别阻塞
+		}
 		g.refreshFromEtcd() // 全量更新一遍
 	case <-ctx.Done():
 	}
